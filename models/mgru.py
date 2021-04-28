@@ -15,7 +15,8 @@ class mGRU(nn.Module):
         self.n_out = self.options["CLASSES"]
         self.device = torch.device("cuda:0" if self.options["CUDA"] else "cpu")
 
-        self.linear1 = nn.Linear(768, self.n_embed).to(self.device)
+        self.p_linear = nn.Linear(768, self.n_embed).to(self.device)
+        self.h_linear = nn.Linear(768, self.n_embed).to(self.device)
         self.premise_gru = nn.GRU(self.n_embed, self.n_dim, bidirectional=False).to(self.device)
         self.hypothesis_gru = nn.GRU(self.n_embed, self.n_dim, bidirectional=False).to(self.device)
         self.out = nn.Linear(self.n_dim, self.n_out).to(self.device)
@@ -93,36 +94,37 @@ class mGRU(nn.Module):
 
         return torch.bmm(alpha.unsqueeze(1), H_s).squeeze(1), alpha
 
-    def _attn_gru_forward(self, o_h, r_0, o_p):
+    def _attn_gru_forward(self, o_h, h_m_0, o_p):
         '''Use match-GRU to modeling the matching between the premise and the hypothesis.
 
         Parameters:
         ----
          - o_h (seq_len, batch, n_dim): hypothesis's output from GRU
-         - r_0 (batch, n_dim): 
+         - h_m_0 (batch, n_dim): 
          - o_p (seq_len, batch,n_dim): premise's output from GRU; will attend on it at every step.
 
         Returns:
         ----
-         - r : batch x n_dim : the last state of the rnn
-         - alpha_vec : T x batch x T the attn vec at every step
+         - h_m_t (batch, n_dim) the last state of the rnn
+         - alpha_vec (seq_len_p, batch, seq_len_h) the attn vec at every step
         '''
         seq_len_h = o_h.size(0)
         batch_size = o_h.size(1)
         seq_len_p = o_p.size(0)
         alpha_vec = Variable(torch.rand(seq_len_h, batch_size, seq_len_p))
+        h_m_tm1 = h_m_0
         for ix, h_t in enumerate(o_h):
             '''
                 h_t : batch x n_dim
             '''
-            a_t, alpha = self._attention_forward(o_p, h_t, r_0)   # a_t : batch x n_dim
-                                                                  # alpha : batch x T                                                                         
+            a_t, alpha = self._attention_forward(o_p, h_t, h_m_tm1)   # a_t: batch x n_dim; alpha: batch x seq_len                                                                         
             alpha_vec[ix] = alpha
             m_t = torch.cat([a_t, h_t.to(self.device)], dim=-1)
-            r_t, _ = self.m_gru(m_t.unsqueeze(0).to(self.device), 
-                                r_0.unsqueeze(0).to(self.device))
+            h_m_t, _ = self.m_gru(m_t.unsqueeze(0).to(self.device), 
+                                h_m_tm1.unsqueeze(0).to(self.device))
+            h_m_tm1 = h_m_t[0]
             
-        return r_t[0], alpha_vec
+        return h_m_t[0], alpha_vec
 
     def forward(self, encoded_p, encoded_h, training):
         """Forward step
@@ -137,15 +139,15 @@ class mGRU(nn.Module):
         encoded_p = F.dropout(encoded_p, p=self.options["DROPOUT"], training=training)
         encoded_h = F.dropout(encoded_h, p=self.options["DROPOUT"], training=training)
         # Firse linear layer: 768 -> n_embed
-        encoded_p = self.linear1(encoded_p)
-        encoded_h = self.linear1(encoded_h)
+        encoded_p = self.p_linear(encoded_p)
+        encoded_h = self.h_linear(encoded_h)
         # RNN
         h_p_0, h_h_0 = self._init_hidden(batch_size)  # 1 x batch x n_dim
         o_p, _ = self._gru_forward(self.premise_gru, encoded_p, h_p_0)
         o_h, _ = self._gru_forward(self.hypothesis_gru, encoded_h, h_h_0)
         # Attention
-        r_0 = self._attn_gru_init_hidden(batch_size)
-        h_star, _ = self._attn_gru_forward(o_h, r_0, o_p)
+        h_m_0 = self._attn_gru_init_hidden(batch_size)
+        h_star, _ = self._attn_gru_forward(o_h, h_m_0, o_p)
         # Output layer
         h_star = self.out(h_star.cuda())
         if self.options["LAST_NON_LINEAR"]:
