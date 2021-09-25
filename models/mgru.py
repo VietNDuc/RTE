@@ -114,9 +114,7 @@ class mGRU(nn.Module):
         alpha_vec = Variable(torch.rand(seq_len_h, batch_size, seq_len_p))
         h_m_tm1 = h_m_0
         for ix, h_t in enumerate(o_h):
-            '''
-                h_t : batch x n_dim
-            '''
+            #  h_t : batch x n_dim
             a_t, alpha = self._attention_forward(o_p, h_t, h_m_tm1)   # a_t: batch x n_dim; alpha: batch x seq_len                                                                         
             alpha_vec[ix] = alpha
             m_t = torch.cat([a_t, h_t.to(self.device)], dim=-1)
